@@ -24,6 +24,7 @@ from meshcoredecoder.crypto import MeshCoreKeyStore
 from meshcoredecoder.types.crypto import DecryptionOptions
 
 LOGGER_LEVEL = logging.INFO
+SEEN_TTL = timedelta(minutes=5)  # Time-to-live for seen message hashes
 
 def send_discord_message(
     webhook_url: str,
@@ -141,8 +142,8 @@ class MessageBot:
         self.setup_logging()
 
 
-        # Message hash tracking to avoid duplicates
-        self.seen_message_hashes = set()
+        # Message hash tracking to avoid duplicates (dict: hash -> timestamp)
+        self.seen_message_hashes: Dict[str, datetime] = {}
         
         # Aggregate messages by channel for output
         self.channel_messages: Dict[str, List[Dict]] = {}
@@ -268,9 +269,27 @@ class MessageBot:
 
             # filter: Skip if we've already seen this message hash
             message_hash = packet.message_hash
+            now = datetime.now()
+                
+            # Clean old entries and check for duplicates
             if message_hash in self.seen_message_hashes:
-                return
-            self.seen_message_hashes.add(message_hash)
+                # Check if entry is still valid (not expired)
+                if now - self.seen_message_hashes[message_hash] < SEEN_TTL:
+                    return
+                else:
+                    # Entry expired, remove it
+                    del self.seen_message_hashes[message_hash]
+                    
+            # Clean up any other expired entries (lazy cleanup)
+            expired_hashes = [
+                h for h, ts in self.seen_message_hashes.items()
+                if now - ts >= SEEN_TTL
+            ]
+            for h in expired_hashes:
+                del self.seen_message_hashes[h]
+                
+            # Add current message hash with timestamp
+            self.seen_message_hashes[message_hash] = now
 
             # Build message entry (with metadata)
             channel_hash = group_text.channel_hash if hasattr(group_text, 'channel_hash') else None

@@ -26,8 +26,139 @@ from meshcoredecoder.types.crypto import DecryptionOptions
 LOGGER_LEVEL = logging.INFO
 SEEN_TTL = timedelta(minutes=5)  # Time-to-live for seen message hashes
 
+import requests
+
+
+def create_discord_thread(channel_id, bot_token, thread_name):
+    headers = {"Authorization": f"Bot {bot_token}"}
+    
+    # First, get channel info to retrieve guild_id
+    channel_info_url = f"https://discord.com/api/v10/channels/{channel_id}"
+    channel_response = requests.get(channel_info_url, headers=headers)
+    
+    if channel_response.status_code != 200:
+        raise Exception(f"Failed to get channel info: {channel_response.status_code} - {channel_response.text}")
+    
+    channel_data = channel_response.json()
+    guild_id = channel_data.get('guild_id')
+    
+    if not guild_id:
+        raise Exception(f"Channel {channel_id} is not in a guild (DMs are not supported)")
+    
+    # Helper function to search threads in a list by name, filtering by parent channel
+    def find_thread_by_name(threads_list, name, parent_channel_id):
+        for thread in threads_list:
+            # Check if thread belongs to this channel and name matches
+            thread_parent_id = thread.get('parent_id')
+            if str(thread_parent_id) == str(parent_channel_id) and thread.get('name') == name:
+                return thread.get('id')
+        return None
+    
+    # 1. Check for existing active threads using guild endpoint
+    active_threads_url = f"https://discord.com/api/v10/guilds/{guild_id}/threads/active"
+    get_response = requests.get(active_threads_url, headers=headers)
+    
+    if get_response.status_code == 200:
+        response_data = get_response.json()
+        threads = response_data.get('threads', [])
+#        print(f"Checking {len(threads)} active threads in guild for '{thread_name}' in channel {channel_id}")
+        for thread in threads:
+#            print(f"  Active thread: '{thread.get('name')}' (parent: {thread.get('parent_id')}, id: {thread.get('id')})")
+            thread_id = find_thread_by_name(threads, thread_name, channel_id)
+            if thread_id:
+                print(f"Found existing active thread: {thread_name} ({thread_id})")
+                return thread_id
+    else:
+        print(f"Warning: Active threads endpoint returned {get_response.status_code}: {get_response.text}")
+    
+    # 2. Check for public archived threads using guild endpoint
+    archived_public_url = f"https://discord.com/api/v10/guilds/{guild_id}/threads/archived/public"
+    archived_public_response = requests.get(archived_public_url, headers=headers)
+    
+    if archived_public_response.status_code == 200:
+        response_data = archived_public_response.json()
+        archived_threads = response_data.get('threads', [])
+#        print(f"Checking {len(archived_threads)} archived public threads in guild for '{thread_name}' in channel {channel_id}")
+        for thread in archived_threads:
+#            print(f"  Archived public thread: '{thread.get('name')}' (parent: {thread.get('parent_id')}, id: {thread.get('id')})")
+            thread_id = find_thread_by_name(archived_threads, thread_name, channel_id)
+            if thread_id:
+                print(f"Found existing archived public thread: {thread_name} ({thread_id})")
+                return thread_id
+    
+    # 3. Check for private archived threads (if bot has access)
+    archived_private_url = f"https://discord.com/api/v10/guilds/{guild_id}/threads/archived/private"
+    archived_private_response = requests.get(archived_private_url, headers=headers)
+    
+    if archived_private_response.status_code == 200:
+        response_data = archived_private_response.json()
+        archived_private_threads = response_data.get('threads', [])
+#        print(f"Checking {len(archived_private_threads)} archived private threads in guild for '{thread_name}' in channel {channel_id}")
+        thread_id = find_thread_by_name(archived_private_threads, thread_name, channel_id)
+        if thread_id:
+            print(f"Found existing archived private thread: {thread_name} ({thread_id})")
+            return thread_id
+    
+    # 4. Create a new thread
+    # For forum channels (type 15), threads are created the same way but might need an initial message
+    # For text channels, we can create threads without a message
+    create_url = f"https://discord.com/api/v10/channels/{channel_id}/threads"
+    payload = {
+        "name": thread_name,
+        "type": 11,  # 11 = public_thread
+        "auto_archive_duration": 1440*3  # 72 hours (1440 minutes * 3)
+    }
+    
+    # For forum channels, we need to provide an initial message
+    # Try without message first, if that fails with 400, try with message
+    post_response = requests.post(create_url, headers=headers, json=payload)
+    
+    if post_response.status_code == 201:
+        created_thread_id = post_response.json()['id']
+        print(f"Created new thread: {thread_name} ({created_thread_id})")
+        return created_thread_id
+    elif post_response.status_code == 400:
+        error_text = post_response.text
+        # Check if it's a forum channel that requires an initial message
+        if 'message' in error_text.lower() or 'content' in error_text.lower() or 'forum' in error_text.lower():
+            # Try again with an initial message (forum threads require a message)
+            payload_with_message = {
+                **payload,
+                "message": {
+                    "content": f"Thread: {thread_name}"  # Initial message for forum threads
+                }
+            }
+            retry_response = requests.post(create_url, headers=headers, json=payload_with_message)
+            if retry_response.status_code == 201:
+                created_thread_id = retry_response.json()['id']
+                print(f"Created new forum thread: {thread_name} ({created_thread_id})")
+                return created_thread_id
+            else:
+                raise Exception(f"Failed to create forum thread: {retry_response.status_code} - {retry_response.text}")
+        else:
+            raise Exception(f"Failed to create thread: {error_text}")
+    else:
+        raise Exception(f"Failed to create thread: {post_response.status_code} - {post_response.text}")
+
+# 2. Your modified webhook function
+#def send_discord_message(webhook_url, content, thread_id=None):
+#    params = {'thread_id': thread_id} if thread_id else {}
+#    data = {"content": content}
+    
+#    response = requests.post(webhook_url, json=data, params=params)
+#    return response.status_code
+
+# --- Example Usage ---
+# BOT_TOKEN = "your_bot_token_here"
+# CHANNEL_ID = "123456789"
+# WEBHOOK_URL = "https://discord.com/api/webhooks/..."
+
+# new_id = create_discord_thread(CHANNEL_ID, BOT_TOKEN, "New Discussion")
+# send_discord_message(WEBHOOK_URL, "Hello inside the new thread!", thread_id=new_id)
+
 def send_discord_message(
     webhook_url: str,
+    thread_id: int,
     content: str = None,
     username: str = None,
     avatar_url: str = None,
@@ -52,18 +183,32 @@ def send_discord_message(
         data["avatar_url"] = avatar_url
     if embeds:
         data["embeds"] = embeds
-
-    response = requests.post(webhook_url, json=data)
+    params = {'thread_id': thread_id}
+    response = requests.post(webhook_url, json=data, params=params)
     if response.status_code not in (200, 204):
         raise Exception(f"Failed to send message: {response.status_code} - {response.text}")
 
-def send_discord_grouptext(webhook_url: str, chnl_name: str, sender: str, message: str,path: str):
+def get_color_for_channel(channel_name: str) -> int:
+    """
+    Generate a consistent color for a channel name using hash.
+    Returns a color value between 0x333333 and 0xFFFFFF (avoiding very dark colors).
+    """
+    # Use hash to get a consistent value for the channel name
+    hash_value = hash(channel_name)
+    # Convert to positive and map to color range (0x333333 to 0xFFFFFF for good visibility)
+    color_hash = abs(hash_value) % (0xFFFFFF - 0x333333 + 1)
+    color = 0x333333 + color_hash
+    return color
+
+def send_discord_grouptext(webhook_url: str, thread_id: int, chnl_name: str, sender: str, message: str, path: str):
     str = f"**{chnl_name}** {sender}: {message}"
     if webhook_url != None:
+        # Generate unique color for this channel
+        channel_color = get_color_for_channel(chnl_name)
         embed = {
     #        "title": "CC9 HV4",
     #        "description": "Your automated build finished successfully.",
-            "color": 0x00FF00,  # Bright green
+            "color": channel_color,
             "fields": [
                 {"name": '', "value": str, "inline": False},
 #                {"name": '', "value": path, "inline": True},
@@ -71,7 +216,7 @@ def send_discord_grouptext(webhook_url: str, chnl_name: str, sender: str, messag
         "footer": {"text": path},
     #        "timestamp": datetime.now().isoformat() + 'Z'
         }
-        send_discord_message(webhook_url, embeds=[embed])
+        send_discord_message(webhook_url, thread_id, embeds=[embed])
     print(str)
 
 def format_path(path, origin):
@@ -142,20 +287,6 @@ class MessageBot:
         self.setup_logging()
 
 
-        # Message hash tracking to avoid duplicates (dict: hash -> timestamp)
-        self.seen_message_hashes: Dict[str, datetime] = {}
-        
-        # Aggregate messages by channel for output
-        self.channel_messages: Dict[str, List[Dict]] = {}
-
-        self.channel_keys_by_hash, self.channel_keys_by_name = self._load_channel_keys(self.config)
-        if self.channel_keys_by_hash:
-            # Initialize key store (library will compute hashes)
-            key_store = MeshCoreKeyStore({
-                'channel_secrets': list(self.channel_keys_by_hash.values())
-            })
-            self.decryption_options = DecryptionOptions(key_store=key_store)
-
         # Set up MQTT client
         if self.config.get("mqtt", "use_websockets",fallback='n') == 'y':
             self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, transport="websockets")
@@ -182,9 +313,28 @@ class MessageBot:
         self.logger.info(f"Discord webhook URL: {self.webhook_url}")
         self.msgbot_token = self.config.get("discord", "msgbot_token", fallback=None)
         self.logger.info(f"MSGBot Token: {self.msgbot_token}")
-        # channel id currently not used.. webhook is per channel
-        self.discord_channel = self.config.get("discord", "channel_id", fallback=None)
-        self.logger.info(f"Discord Channel ID: {self.discord_channel}")
+        self.discord_channel_id = self.config.get("discord", "channel_id", fallback=None)
+        self.logger.info(f"Discord Channel ID: {self.discord_channel_id}")
+        print(f"Discord Channel ID: {self.discord_channel_id}")
+
+        # Message hash tracking to avoid duplicates (dict: hash -> timestamp)
+        self.seen_message_hashes: Dict[str, datetime] = {}
+        
+        # Aggregate messages by channel for output
+        self.channel_messages: Dict[str, List[Dict]] = {}
+
+        # Store thread_id for each channel name (channel_name -> thread_id)
+        self.channel_thread_ids: Dict[str, int] = {}
+
+        self.channel_keys_by_hash, self.channel_keys_by_name = self._load_channel_keys(self.config)
+        if self.channel_keys_by_hash:
+            # Initialize key store (library will compute hashes)
+            key_store = MeshCoreKeyStore({
+                'channel_secrets': list(self.channel_keys_by_hash.values())
+            })
+            self.decryption_options = DecryptionOptions(key_store=key_store)
+
+        
 
     def setup_logging(self):
         """Set up logging to both console and file"""
@@ -229,12 +379,21 @@ class MessageBot:
         by_name: Dict[str, Tuple[str, str]] = {}
         print("channels:")
         for name in config.options('channels'):
+            # Strip leading and trailing quotes (both single and double) from channel name
+            channel_name = name.strip()
+            if (channel_name.startswith("'") and channel_name.endswith("'")) or \
+               (channel_name.startswith('"') and channel_name.endswith('"')):
+                channel_name = channel_name[1:-1]
+            thread_id = create_discord_thread(self.discord_channel_id, self.msgbot_token, channel_name)
+            # Store thread_id using the modified channel name
+            self.channel_thread_ids[channel_name] = thread_id
+            print(f"{channel_name} {thread_id}")
             secret = config.get('channels', name).strip()
             chash = self._compute_channel_hash(secret)
-            self.logger.info(f" {name}:{secret}:{chash}")
-            print(f" {name}:{secret}:{chash}")
+            self.logger.info(f" {channel_name}:{thread_id}:{secret}:{chash}")
+            print(f" {channel_name}:{thread_id}:{secret}:{chash}")
             by_hash[chash] = secret
-            by_name[name] = (chash, secret)
+            by_name[channel_name] = (chash, secret)
         return by_hash, by_name
 
     def process_packet(self, entry):
@@ -333,13 +492,18 @@ class MessageBot:
                         break
                 bucket_name = channel_name or (f"encrypted_{channel_hash}" if channel_hash else "encrypted_unknown")
                 print(f"{bucket_name}:{message_entry['sender']}:{message_entry['message']}")
-                if bucket_name.lower() != 'public':
-                    chnl_name = '#'+bucket_name
-                else:
-                    chnl_name = bucket_name
                 sender = message_entry['sender']
                 msg = message_entry['message']
-                send_discord_grouptext(self.webhook_url,chnl_name,sender,msg,path_str)
+                # Retrieve thread_id for this channel
+                thread_id = self.channel_thread_ids.get(channel_name) if channel_name else None
+                if thread_id and self.webhook_url:
+                    send_discord_grouptext(self.webhook_url, thread_id, bucket_name, sender, msg, path_str)
+                else:
+                    # Channel not in config or no thread_id available - still print but don't send to Discord
+                    if not thread_id:
+                        self.logger.warning(f"No thread_id found for channel: {channel_name or bucket_name}, skipping Discord")
+                    msg_str = f"**{bucket_name}** {sender}: {msg}"
+                    print(msg_str)
                 #print(message_entry.get('path','Direct'))
                 #print(json.dumps(message_entry, indent=2))
                 #print(json.dumps(message_entry))

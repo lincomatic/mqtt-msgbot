@@ -158,9 +158,9 @@ class MessageBot:
 
         # Set up MQTT client
         if self.config.get("mqtt", "use_websockets",fallback='n') == 'y':
-            self.client = mqtt.Client(transport="websockets")
+            self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, transport="websockets")
         else:
-            self.client = mqtt.Client()
+            self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.client.username_pw_set(self.username, self.password)
 
         # Set up callbacks
@@ -383,16 +383,16 @@ class MessageBot:
         except Exception as e:
             self.logger.error(f"Error logging message data: {e}")
 
-    def on_connect(self, client, userdata, flags, rc):
+    def on_connect(self, client, userdata, connect_flags, reason_code, properties):
         """Callback for when client connects to broker"""
-        if rc == 0:
+        if reason_code == 0:
             self.logger.info("Successfully connected to MQTT broker")
             # Subscribe to all topics
             for topic in self.topics:
                 client.subscribe(topic)
                 self.logger.info(f"Subscribed to topic: {topic}")
         else:
-            self.logger.error(f"Failed to connect to broker, return code {rc}")
+            self.logger.error(f"Failed to connect to broker, reason code {reason_code}")
 
     def on_message(self, client, userdata, msg):
         """Callback for when a message is received"""
@@ -406,10 +406,10 @@ class MessageBot:
         # Log structured data
         self.log_message_data(topic, payload)
 
-    def on_disconnect(self, client, userdata, rc):
+    def on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
         """Callback for when client disconnects from broker"""
-        if rc != 0:
-            self.logger.warning(f"Unexpected disconnection from broker (rc={rc})")
+        if reason_code != 0:
+            self.logger.warning(f"Unexpected disconnection from broker (reason_code={reason_code})")
         else:
             self.logger.info("Disconnected from broker")
 

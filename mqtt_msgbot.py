@@ -217,11 +217,13 @@ def send_discord_grouptext(webhook_url: str, thread_id: int, chnl_name: str, sen
     #        "timestamp": datetime.now().isoformat() + 'Z'
         }
         send_discord_message(webhook_url, thread_id, embeds=[embed])
-    print(str)
+    print(f"{str} {path}")
 
-def format_path(path, origin):
+def format_path(path_hash_size,path, origin):
     # Get the first two characters of origin, force uppercase
-    origin_prefix = origin[:2]
+    pathchars = path_hash_size if path_hash_size is not None else 1
+    pathchars *= 2
+    origin_prefix = origin[:pathchars]
 
     if path is None:
         # Return '[XX]' where XX is the origin prefix
@@ -467,7 +469,7 @@ class MessageBot:
                 'decrypted': False
             }
 
-            path_str = format_path(packet.path, message_entry['origin_id'])
+            path_str = format_path(packet.path_hash_size,packet.path, message_entry['origin_id'])
 #            print(f"path {path_str}")
 
             # Determine channel bucket name

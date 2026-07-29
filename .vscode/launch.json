@@ -4,13 +4,13 @@
         
 
         {
-            "name": "Python: Current File (Integrated Terminal)",
+            "name": "Python: Launch mqtt_msgbot with config-socal.ini",
             "type": "python",
             "request": "launch",
-            "program": "${file}",
+            "program": "${workspaceFolder}/mqtt_msgbot.py",
             "console": "integratedTerminal",
             "justMyCode": false,
-            "args": ["-c", "config-test.ini"] 
+            "args": ["-c", "config-socal.ini"]
         }
     ]
 }
